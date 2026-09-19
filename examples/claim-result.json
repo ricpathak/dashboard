@@ -1,0 +1,1 @@
+{"uuid":"sample-claim-01","historyId":"sample-claim-validation","name":"Validate claim eligibility","status":"passed","start":1789809000000,"stop":1789809001800,"labels":[{"name":"project","value":"Claims API"},{"name":"suite","value":"Eligibility"}]}

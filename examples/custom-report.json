@@ -1,0 +1,9 @@
+{
+  "project": "Underwriting",
+  "startedAt": "2026-09-19T09:30:00Z",
+  "tests": [
+    { "name": "Approve standard risk", "suite": "New business", "status": "passed", "durationMs": 2100 },
+    { "name": "Reject missing income", "suite": "Validation", "status": "failed", "durationMs": 3100, "error": "Expected validation message was missing" },
+    { "name": "Generate policy", "suite": "Issuance", "status": "skipped", "durationMs": 0 }
+  ]
+}
