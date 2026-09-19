@@ -4,3 +4,6 @@ data/
 .sites-runtime/
 .env
 *.log
+.tmp-html-*/
+test-results/
+playwright-report/

@@ -3,6 +3,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { normalize, expandFiles } from "./normalize";
 import {
+  defaultImportLimits,
+  ignored,
+  type ImportLimits,
+} from "./import-files";
+import {
   summary,
   statuses,
   type Run,
@@ -44,6 +49,8 @@ function App() {
     [runName, setRunName] = useState(""),
     [mapping, setMapping] = useState<Mapping>({}),
     [drag, setDrag] = useState(false);
+  const [limits, setLimits] = useState<ImportLimits>(defaultImportLimits);
+  const [importProgress, setImportProgress] = useState("");
   const importer = useRef<HTMLElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const reload = async () => {
@@ -54,7 +61,9 @@ function App() {
   useEffect(() => {
     fetch("/api/health")
       .then(async (r) => {
-        if (r.ok && (await r.json()).mode === "server") {
+        const health = r.ok ? await r.json() : null;
+        if (health?.mode === "server") {
+          if (health.importLimits) setLimits(health.importLimits);
           setMode("server");
           await reload();
         } else setMode("session");
@@ -107,27 +116,77 @@ function App() {
     setStatus("all");
     setQuery("");
   };
+  const chooseFiles = (selected: File[]) => {
+    setFiles(
+      selected.filter(
+        (f) =>
+          !ignored(f.webkitRelativePath || f.name) &&
+          /\.(html?|json|csv|zip)$/i.test(f.name),
+      ),
+    );
+  };
   async function importReports() {
     setBusy(true);
     setError("");
     setMessage("");
     try {
-      const input = await expandFiles(files);
       const options = { project: projectOverride, name: runName, mapping };
-      const parsed = await normalize(input, options);
       let added = 0,
         duplicates = 0;
       if (mode === "server") {
-        const response = await fetch("/api/import", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files: input, options }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw Error(data.error);
+        if (files.reduce((n, f) => n + f.size, 0) > limits.maxUploadBytes)
+          throw Error(
+            `Selected files exceed ${Math.round(limits.maxUploadBytes / 1024 ** 2)} MB. Increase MAX_UPLOAD_MB on the Node server.`,
+          );
+        const form = new FormData();
+        form.append("options", JSON.stringify(options));
+        files.forEach((f) =>
+          form.append("files", f, f.webkitRelativePath || f.name),
+        );
+        const data = await new Promise<{ added: number; duplicates: number }>(
+          (resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", "/api/import");
+            xhr.upload.onprogress = (e) =>
+              setImportProgress(
+                e.lengthComputable
+                  ? `Uploading ${Math.round((e.loaded / e.total) * 100)}%`
+                  : "Uploading…",
+              );
+            xhr.upload.onload = () =>
+              setImportProgress("Extracting test results…");
+            xhr.onerror = () =>
+              reject(Error("Upload failed. Check the Node server and retry."));
+            xhr.onload = () => {
+              try {
+                const result = JSON.parse(xhr.responseText);
+                if (xhr.status < 200 || xhr.status >= 300)
+                  reject(Error(result.error || "Import failed."));
+                else resolve(result);
+              } catch {
+                reject(Error("Server returned an invalid response."));
+              }
+            };
+            xhr.send(form);
+          },
+        );
         ({ added, duplicates } = data);
         await reload();
       } else {
+        setImportProgress("Reading report metadata…");
+        const input = await expandFiles(
+          files.map((f) => ({
+            name: f.webkitRelativePath || f.name,
+            size: f.size,
+            stream: () => f.stream(),
+          })),
+          limits,
+          (p) =>
+            setImportProgress(
+              `Reading ${Math.round((p.bytesRead / Math.max(p.totalBytes, 1)) * 100)}%`,
+            ),
+        );
+        const parsed = await normalize(input, options);
         const current = demo ? [] : runs;
         const known = new Set(current.map((r) => r.fingerprint));
         const fresh: Run[] = [];
@@ -156,6 +215,7 @@ function App() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      setImportProgress("");
     }
   }
   async function removeRun(r: Run) {
@@ -760,7 +820,7 @@ function App() {
                 Select multiple reports to combine projects in one dashboard.
               </p>
             </div>
-            <span className="badge">JSON · CSV · ZIP</span>
+            <span className="badge">HTML · JSON · CSV · ZIP</span>
           </div>
           <div className="import-grid">
             <div>
@@ -774,7 +834,7 @@ function App() {
                 onDrop={(e) => {
                   e.preventDefault();
                   setDrag(false);
-                  setFiles(Array.from(e.dataTransfer.files));
+                  chooseFiles(Array.from(e.dataTransfer.files));
                 }}
               >
                 <span className="upload-icon">↥</span>
@@ -784,7 +844,7 @@ function App() {
                     : "Drop reports here or browse files"}
                 </strong>
                 <span>
-                  Playwright JSON, Allure result files, custom JSON/CSV
+                  Playwright HTML/JSON, Allure ZIPs, custom HTML/JSON/CSV
                 </span>
                 <input
                   id="report-files"
@@ -793,18 +853,41 @@ function App() {
                     e.currentTarget.value = "";
                   }}
                   multiple
-                  accept=".json,.csv,.zip,.html"
-                  onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                  accept=".json,.csv,.zip,.html,.htm"
+                  onChange={(e) =>
+                    chooseFiles(Array.from(e.target.files || []))
+                  }
                 />
               </label>
+              <label className="folder-picker">
+                Or choose a report folder
+                <input
+                  type="file"
+                  multiple
+                  {...{ webkitdirectory: "" }}
+                  onChange={(e) =>
+                    chooseFiles(Array.from(e.target.files || []))
+                  }
+                />
+              </label>
+              <p className="import-help">
+                Up to {Math.round(limits.maxUploadBytes / 1024 ** 2)} MB per
+                import · {Math.round(limits.maxMetadataBytes / 1024 ** 2)} MB
+                extracted test data. Images and traces are excluded.
+              </p>
               {files.length > 0 && (
                 <p className="selected-files">
-                  {files.map((f) => f.name).join(", ")}
+                  {files
+                    .slice(0, 8)
+                    .map((f) => f.name)
+                    .join(", ")}
+                  {files.length > 8 ? ` … and ${files.length - 8} more` : ""}
                 </p>
               )}
               <p className="import-help">
-                ZIPs can contain JSON/CSV reports. Import all Allure files from
-                one execution together. HTML-only reports need a JSON export.
+                Import Playwright index.html directly. For Allure, choose its
+                whole report folder or ZIP including data/. Custom HTML tables
+                need test-name and status columns.
               </p>
             </div>
             <div className="import-options">
@@ -875,7 +958,9 @@ function App() {
                 disabled={!files.length || busy || mode === "loading"}
                 onClick={importReports}
               >
-                {busy ? "Importing…" : "Import and normalize →"}
+                {busy
+                  ? importProgress || "Importing…"
+                  : "Import and normalize →"}
               </button>
             </div>
           </div>

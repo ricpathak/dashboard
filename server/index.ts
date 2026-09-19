@@ -1,3 +1,4 @@
+import { multipartReports, importLimits, validateOptions } from "./uploads.ts";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
@@ -58,7 +59,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (url.pathname === "/api/health") {
-      send(200, { mode: "server", storage: "sqlite" });
+      send(200, { mode: "server", storage: "sqlite", importLimits });
       return;
     }
     if (url.pathname === "/api/runs" && req.method === "GET") {
@@ -72,31 +73,39 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (url.pathname === "/api/import" && req.method === "POST") {
-      if (!req.headers["content-type"]?.startsWith("application/json")) {
-        send(415, { error: "Use application/json." });
+      let body;
+      if (req.headers["content-type"]?.startsWith("multipart/form-data")) {
+        body = await multipartReports(req);
+      } else if (req.headers["content-type"]?.startsWith("application/json")) {
+        let size = 0;
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > importLimits.maxMetadataBytes) {
+            send(413, {
+              error:
+                "JSON request exceeds MAX_METADATA_MB. Use multipart/form-data for large HTML or ZIP files.",
+            });
+            return;
+          }
+          chunks.push(chunk);
+        }
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (
+          !Array.isArray(body.files) ||
+          body.files.length > importLimits.maxFiles ||
+          body.files.some(
+            (f: any) =>
+              typeof f?.name !== "string" || typeof f?.text !== "string",
+          )
+        )
+          throw Error("files must contain {name,text} records.");
+        body.options = validateOptions(body.options);
+      } else {
+        send(415, { error: "Use multipart/form-data or application/json." });
         return;
       }
-      let size = 0;
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        size += chunk.length;
-        if (size > 55 * 1024 * 1024) {
-          send(413, { error: "Request exceeds 55 MB." });
-          return;
-        }
-        chunks.push(chunk);
-      }
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (
-        !Array.isArray(body.files) ||
-        body.files.length > 10000 ||
-        body.files.some(
-          (f: any) =>
-            typeof f?.name !== "string" || typeof f?.text !== "string",
-        )
-      )
-        throw Error("files must contain up to 10,000 {name,text} records.");
-      const parsed = await normalize(body.files, body.options || {});
+      const parsed = await normalize(body.files, body.options);
       let added = 0;
       db.exec("BEGIN");
       try {
@@ -150,10 +159,13 @@ const server = createServer(async (req, res) => {
     res.end(req.method === "HEAD" ? undefined : readFileSync(file));
   } catch (e) {
     if (!res.headersSent)
-      send(400, { error: e instanceof Error ? e.message : "Invalid request" });
+      send((e as { statusCode?: number })?.statusCode || 400, {
+        error: e instanceof Error ? e.message : "Invalid request",
+      });
     else res.end();
   }
 });
+server.requestTimeout = 0; // Large local uploads may take longer than Node's five-minute default.
 server.listen(port, host, () =>
   console.log(`Test Report Hub: http://${host}:${port} (SQLite: ${dataDir})`),
 );

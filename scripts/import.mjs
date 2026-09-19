@@ -1,5 +1,6 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { resolve, extname } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { openAsBlob } from "node:fs";
+import { resolve, relative, basename } from "node:path";
 const args = process.argv.slice(2);
 let project = "",
   name = "",
@@ -7,8 +8,8 @@ let project = "",
 const paths = [];
 for (let i = 0; i < args.length; i++) {
   if (["--project", "--name", "--url"].includes(args[i])) {
-    const key = args[i];
-    const value = args[++i];
+    const key = args[i],
+      value = args[++i];
     if (!value) throw Error(`Missing ${key} value`);
     if (key === "--project") project = value;
     else if (key === "--name") name = value;
@@ -17,23 +18,47 @@ for (let i = 0; i < args.length; i++) {
 }
 if (!paths.length) {
   console.error(
-    "Usage: npm run import -- <report.json|report.csv|allure-results-folder> [--project Name] [--name Run] [--url http://127.0.0.1:3100]",
+    "Usage: npm run import -- <report.html|report.zip|report.json|report-folder> [--project Name] [--name Run] [--url http://127.0.0.1:3100]",
   );
   process.exit(1);
 }
-const files = [];
-async function collect(path) {
+const form = new FormData();
+form.append("options", JSON.stringify({ project, name }));
+let count = 0;
+async function collect(path, root) {
   const info = await stat(path);
   if (info.isDirectory()) {
-    for (const item of await readdir(path)) await collect(resolve(path, item));
-  } else if ([".json", ".csv"].includes(extname(path).toLowerCase()))
-    files.push({ name: path, text: await readFile(path, "utf8") });
+    for (const item of await readdir(path))
+      if (
+        ![
+          "attachments",
+          "history",
+          "widgets",
+          "traces",
+          "node_modules",
+        ].includes(item)
+      )
+        await collect(resolve(path, item), root);
+  } else if (
+    /\.(html?|json|csv|zip)$/i.test(path) &&
+    !/-attachment\.json$/i.test(path)
+  ) {
+    form.append(
+      "files",
+      await openAsBlob(path),
+      relative(root, path).replace(/\\/g, "/"),
+    );
+    count++;
+  }
 }
-for (const p of paths) await collect(resolve(p));
+for (const p of paths) {
+  const path = resolve(p);
+  await collect(path, resolve(path, ".."));
+}
+if (!count) throw Error("No supported report files found.");
 const response = await fetch(`${url.replace(/\/$/, "")}/api/import`, {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ files, options: { project, name } }),
+  body: form,
 });
 const result = await response.json();
 if (!response.ok) throw Error(result.error);

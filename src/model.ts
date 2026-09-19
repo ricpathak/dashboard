@@ -35,6 +35,9 @@ export interface Run {
 export interface InputFile {
   name: string;
   text: string;
+  kind?: "playwright-html" | "custom-html" | "html-shell";
+  group?: string;
+  warning?: string;
 }
 export interface Mapping {
   root?: string;

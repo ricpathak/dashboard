@@ -138,7 +138,7 @@ test("ZIP extracts report files and ignores attachments", async () => {
 test("Import is rejected for malformed reports and HTML with actionable errors", async () => {
   await assert.rejects(
     () => normalize([{ name: "report.html", text: "<html/>" }]),
-    /JSON/,
+    /whole report folder/,
   );
   await assert.rejects(
     () => normalize([file({ hello: "world" })]),

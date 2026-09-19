@@ -1058,3 +1058,12 @@ pre {
     transition: none !important;
   }
 }
+.folder-picker {
+  margin-top: 16px;
+  font-size: 0.875rem;
+}
+.folder-picker input {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+}

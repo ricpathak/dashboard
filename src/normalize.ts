@@ -1,5 +1,6 @@
 import { newId, fingerprint } from "./identity";
-import { unzipSync } from "fflate";
+import { expandFiles, defaultImportLimits } from "./import-files";
+export { expandFiles } from "./import-files";
 import type {
   InputFile,
   ImportOptions,
@@ -249,42 +250,6 @@ function allure(records: Obj[], options: ImportOptions): TestCase[] {
     });
   });
 }
-export async function expandFiles(
-  files: { name: string; arrayBuffer: () => Promise<ArrayBuffer> }[],
-): Promise<InputFile[]> {
-  const output: InputFile[] = [];
-  let bytes = 0;
-  let expandedBytes = 0;
-  const max = 50 * 1024 * 1024;
-  for (const file of files) {
-    const b = new Uint8Array(await file.arrayBuffer());
-    bytes += b.length;
-    if (bytes > max)
-      throw Error("Import exceeds 50 MB. Split the report batch.");
-    if (/\.zip$/i.test(file.name)) {
-      const entries = unzipSync(b, {
-        filter: (e) => {
-          expandedBytes += e.originalSize;
-          if (expandedBytes > max) throw Error("Expanded ZIP exceeds 50 MB.");
-          return (
-            /\.(json|csv)$/i.test(e.name) &&
-            !/(^|\/)(history|widgets|attachments)\//.test(e.name)
-          );
-        },
-      });
-      for (const [name, data] of Object.entries(entries)) {
-        output.push({ name, text: new TextDecoder().decode(data) });
-      }
-    } else {
-      expandedBytes += b.length;
-      if (expandedBytes > max) throw Error("Expanded import exceeds 50 MB.");
-      output.push({ name: file.name, text: new TextDecoder().decode(b) });
-    }
-    if (output.length > 10000)
-      throw Error("Maximum 10,000 report files per import.");
-  }
-  return output;
-}
 export async function normalize(
   files: InputFile[],
   options: ImportOptions = {},
@@ -299,6 +264,19 @@ export async function normalize(
     startedAt: string;
   }[] = [];
   const allures: { file: InputFile; data: Obj }[] = [];
+  const expanded: InputFile[] = [];
+  for (const f of files) {
+    if (/\.html?$/i.test(f.name) && !f.kind) {
+      const blob = new Blob([f.text]);
+      expanded.push(
+        ...(await expandFiles(
+          [{ name: f.name, size: blob.size, stream: () => blob.stream() }],
+          defaultImportLimits,
+        )),
+      );
+    } else expanded.push(f);
+  }
+  files = expanded;
   const ignored: string[] = [];
   for (const file of files) {
     if (
@@ -308,10 +286,7 @@ export async function normalize(
       ignored.push(file.name);
       continue;
     }
-    if (/\.html?$/i.test(file.name))
-      throw Error(
-        "HTML is a presentation format. Import Playwright JSON, allure-results/*-result.json, or Allure 2 data/test-cases JSON instead.",
-      );
+    if (file.kind === "html-shell") continue;
     let data: any;
     try {
       data = /\.csv$/i.test(file.name)
@@ -330,6 +305,58 @@ export async function normalize(
       !Array.isArray(data.tests)
     ) {
       allures.push({ file, data });
+      continue;
+    }
+    if (file.kind === "playwright-html") {
+      const tests: TestCase[] = [];
+      for (const f of arr(data.files))
+        for (const t of arr(f.tests)) {
+          const outcome: Status =
+            (
+              {
+                expected: "passed",
+                unexpected: "failed",
+                flaky: "flaky",
+                skipped: "skipped",
+              } as Record<string, Status>
+            )[t.outcome] || "unknown";
+          const results = arr(t.results),
+            last = results.at(-1);
+          tests.push(
+            base({
+              name: str(t.title),
+              project:
+                options.project?.trim() || str(t.projectName) || "Default",
+              suite: arr(t.path).join(" › "),
+              file: str(t.location?.file || f.fileName),
+              status: outcome,
+              rawStatus: str(last?.status || t.outcome),
+              durationMs: num(t.duration),
+              attempts: results.length,
+              error: results.flatMap((r) => arr(r.errors).map(err)).join("\n"),
+            }),
+          );
+        }
+      if (
+        data.stats?.total !== undefined &&
+        num(data.stats.total) !== tests.length
+      )
+        throw Error(
+          `${file.name}: HTML test count does not match embedded summary; unsupported or incomplete report.`,
+        );
+      reports.push({
+        name: file.name,
+        source: "Playwright HTML",
+        tests,
+        files: [file],
+        warnings: [
+          "Imported final outcomes and retry counts from embedded HTML metadata. Screenshots, traces and detailed error attachments are not loaded.",
+        ],
+        startedAt:
+          typeof data.startTime === "number"
+            ? new Date(data.startTime).toISOString()
+            : str(data.startTime),
+      });
       continue;
     }
     if (obj(data) && Array.isArray(data.suites)) {
@@ -355,7 +382,12 @@ export async function normalize(
     try {
       reports.push({
         name: file.name,
-        source: /\.csv$/i.test(file.name) ? "Custom CSV" : "Custom JSON",
+        source:
+          file.kind === "custom-html"
+            ? "Custom HTML"
+            : /\.csv$/i.test(file.name)
+              ? "Custom CSV"
+              : "Custom JSON",
         tests: custom(data, options.mapping, options.project),
         files: [file],
         warnings: [],
@@ -365,25 +397,44 @@ export async function normalize(
       throw Error(`${file.name}: ${(e as Error).message}`);
     }
   }
-  if (allures.length)
+  for (const group of new Set(
+    allures.map((x) => x.file.group || "selected-files"),
+  )) {
+    const grouped = allures.filter(
+      (x) => (x.file.group || "selected-files") === group,
+    );
     reports.push({
-      name: "Allure execution",
+      name: group === "selected-files" ? "Allure execution" : group,
       source: "Allure",
       tests: allure(
-        allures.map((x) => x.data),
+        grouped.map((x) => x.data),
         options,
       ),
-      files: allures.map((x) => x.file),
+      files: grouped.map((x) => x.file),
       warnings: [
         "Allure files in this import are treated as one execution. Import different executions separately.",
       ],
       startedAt: (() => {
-        const times = allures
+        const times = grouped
           .map((x) => num(x.data.start ?? x.data.time?.start))
           .filter(Boolean);
         return times.length ? new Date(Math.min(...times)).toISOString() : "";
       })(),
     });
+  }
+  for (const shell of files.filter((f) => f.kind === "html-shell")) {
+    const companions =
+      shell.warning?.startsWith("Allure") &&
+      allures.some(
+        (x) =>
+          (x.file.group || "selected-files") ===
+          (shell.group || "selected-files"),
+      );
+    if (!companions)
+      throw Error(
+        `${shell.name}: ${shell.warning} For Allure, select the whole report folder or ZIP it with index.html and data/. For a custom HTML layout, provide a sample or a table with test name and status columns.`,
+      );
+  }
   if (!reports.length)
     throw Error(
       "No supported test records found. Import Allure result files, Playwright JSON or custom JSON/CSV.",
