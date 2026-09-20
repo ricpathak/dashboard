@@ -390,7 +390,7 @@ export async function normalize(
               : "Custom JSON",
         tests: custom(data, options.mapping, options.project),
         files: [file],
-        warnings: [],
+        warnings: file.warning ? [file.warning] : [],
         startedAt: str(data.startedAt),
       });
     } catch (e) {

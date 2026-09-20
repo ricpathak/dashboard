@@ -313,3 +313,22 @@ The existing `MAX_UPLOAD_MB` (default 1024 MB) and `MAX_METADATA_MB` (default 25
 limits also apply to each source report bundle. Increase them in the server
 environment for larger reports. Sources scan at most 20,000 directory entries and
 24 levels; use narrower source folders for larger archives.
+
+### Standalone custom HTML content detection (v1.2.1)
+
+The importer also inspects HTML directly for JSON in script blocks, JSON literals
+assigned to `reportData`, `testResults`, `testData`, `results` or `report`, and named
+test cards/list items. It never executes report scripts. Automatic script discovery
+is limited to 2 MB per script; existing explicit report-data JSON blocks use the
+configured metadata limit. Non-JSON JavaScript expressions are not evaluated.
+
+Structural detection recognizes containers such as `test`, `test-case`,
+`testcase`, `test-result`, `test-item`, `test-card`, `scenario`, `scenario-result`,
+or elements with `data-test-name`. Names/statuses come from `data-test-name`,
+`data-status`, or child classes such as `test-name`, `test-title`, `scenario-name`,
+`status`, `test-status`, `result`, `outcome`. Optional `data-project` or
+`project-name` supplies project information. Named step/log containers and hidden
+HTML templates are excluded. Detected records carry a warning to verify totals:
+this is conservative structural detection, not a guarantee for arbitrary HTML.
+Summary-only pages are explicitly rejected rather than converted to fictitious
+test cases. Existing table, Playwright and Allure parsing remains supported.

@@ -1,3 +1,4 @@
+import { htmlContent, embeddedReport } from "./html-content";
 import { Parser } from "htmlparser2";
 import { Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
 import type { InputFile } from "./model";
@@ -254,6 +255,10 @@ function htmlSink(
     cellTag = "",
     cellDepth = 0,
     ignoredDepth = 0;
+  const content = htmlContent();
+  let attributes: Record<string, string> = {},
+    scriptContent = "",
+    scriptOversize = false;
   const rows: Record<string, string>[] = [];
   let foundPlaywright = false,
     foundJson = false;
@@ -299,15 +304,29 @@ function htmlSink(
     {
       onopentagname(n) {
         tagDepth++;
+        attributes = {};
         tag = n;
         id = "";
         type = "";
       },
       onattribute(n, value) {
+        if (
+          [
+            "class",
+            "data-test-name",
+            "data-status",
+            "data-project",
+            "status",
+            "hidden",
+            "aria-hidden",
+          ].includes(n)
+        )
+          attributes[n] = value.slice(0, 4096);
         if (n === "id") id = value;
         if (n === "type") type = value;
       },
       onopentag(n) {
+        content.open(n, attributes);
         if (
           (n === "template" || n === "script") &&
           id === "playwrightReportBase64"
@@ -323,6 +342,8 @@ function htmlSink(
           specialTag = n;
           candidate = true;
           scriptTail = "";
+          scriptContent = "";
+          scriptOversize = false;
           if (
             type === "application/json" &&
             ["report-data", "test-results", "reportData"].includes(id)
@@ -348,6 +369,17 @@ function htmlSink(
           return;
         }
         if (specialTag === "script") {
+          if (!jsonParts && !scriptOversize) {
+            if (
+              scriptContent.length + s.length <=
+              Math.min(ctx.limits.maxMetadataBytes, 2 * 1024 ** 2)
+            )
+              scriptContent += s;
+            else {
+              scriptContent = "";
+              scriptOversize = true;
+            }
+          }
           if (jsonParts) {
             ctx.metadata(new TextEncoder().encode(s).length);
             jsonParts.push(s);
@@ -367,6 +399,7 @@ function htmlSink(
           }
           return;
         }
+        content.text(s);
         if (s.toLowerCase().includes("allure")) allure = true;
         if (cell !== undefined && !ignoredDepth) {
           ctx.metadata(new TextEncoder().encode(s).length);
@@ -374,11 +407,26 @@ function htmlSink(
         }
       },
       onclosetag(n) {
+        content.close();
         if (specialDepth === tagDepth && n === specialTag) {
           if (payload) {
             payload.end();
             payload = undefined;
           }
+          if (!jsonParts && !foundPlaywright && !foundJson && !scriptOversize) {
+            const data = embeddedReport(scriptContent);
+            if (data) {
+              ctx.add({
+                name,
+                text: JSON.stringify(data),
+                kind: "custom-html",
+                warning:
+                  "Extracted embedded JSON without executing report scripts.",
+              });
+              foundJson = true;
+            }
+          }
+          scriptContent = "";
           if (jsonParts) {
             ctx.add({ name, text: jsonParts.join(""), kind: "custom-html" });
             foundJson = true;
@@ -415,6 +463,17 @@ function htmlSink(
         });
         return;
       }
+      const extracted = content.result();
+      if (extracted.tests.length) {
+        ctx.add({
+          name,
+          text: JSON.stringify({ tests: extracted.tests }),
+          kind: "custom-html",
+          warning:
+            "Detected test records from HTML attributes/classes. Verify totals against the original report; unrecognized layouts may omit records.",
+        });
+        return;
+      }
       // Allure's UI shell is resolved against companion test-case files after extraction.
       ctx.add({
         name,
@@ -425,7 +484,9 @@ function htmlSink(
           : origin,
         warning: allure
           ? "Allure HTML requires its data/test-cases folder."
-          : "No embedded Playwright data or test-result table found.",
+          : extracted.summaryOnly
+            ? "Only summary counts were detected; individual test outcomes could not be verified."
+            : "No supported embedded data, named test cards/lists, or test-result table found.",
       });
     },
   };
