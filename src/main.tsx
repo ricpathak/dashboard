@@ -1,3 +1,4 @@
+import { Sources } from "./Sources";
 import { newId } from "./identity";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -38,7 +39,9 @@ function App() {
     [runId, setRunId] = useState("all"),
     [status, setStatus] = useState("all"),
     [query, setQuery] = useState(""),
-    [tab, setTab] = useState<"overview" | "tests" | "reports">("overview"),
+    [tab, setTab] = useState<"overview" | "tests" | "reports" | "sources">(
+      "overview",
+    ),
     [message, setMessage] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -56,7 +59,12 @@ function App() {
   const reload = async () => {
     const r = await fetch("/api/runs");
     if (!r.ok) throw Error("Could not load reports from the server.");
-    setRuns(await r.json());
+    const next: Run[] = await r.json();
+    setRuns((previous) =>
+      previous.map((r) => r.id).join() === next.map((r) => r.id).join()
+        ? previous
+        : next,
+    );
   };
   useEffect(() => {
     fetch("/api/health")
@@ -70,6 +78,13 @@ function App() {
       })
       .catch(() => setMode("session"));
   }, []);
+  useEffect(() => {
+    if (mode !== "server" || demo || busy) return;
+    const timer = setInterval(() => {
+      void reload().catch((e) => setError(e.message));
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [mode, demo, busy]);
   useEffect(() => {
     setPage(0);
   }, [project, runId, status, query, runs]);
@@ -318,6 +333,7 @@ function App() {
               ["overview", "◫", "Overview"],
               ["tests", "☷", "Test results"],
               ["reports", "▤", "Report library"],
+              ["sources", "⇄", "Sources"],
             ] as const
           ).map(([id, icon, label]) => (
             <button
@@ -768,6 +784,13 @@ function App() {
             </div>
           </section>
         )}
+        {tab === "sources" && (
+          <Sources
+            onImported={() => {
+              if (!demo) void reload().catch((e) => setError(e.message));
+            }}
+          />
+        )}
         {tab === "reports" && (
           <section className="panel">
             <div className="panel-heading">
@@ -783,6 +806,16 @@ function App() {
                     {new Date(r.importedAt).toLocaleString()}
                   </p>
                   <small>{r.files.join(", ")}</small>
+                  {r.sourceLabel && (
+                    <p>
+                      Source: {r.sourceLabel} · {r.sourceItem}
+                    </p>
+                  )}
+                  {r.sourceUrl?.startsWith("https://") && (
+                    <a href={r.sourceUrl} target="_blank" rel="noreferrer">
+                      Open original report
+                    </a>
+                  )}
                   {r.warnings.map((w, i) => (
                     <p className="warning" key={i}>
                       {w}

@@ -1,3 +1,5 @@
+import { loadSources } from "./sources/config.ts";
+import { SourceManager } from "./sources/manager.ts";
 import { multipartReports, importLimits, validateOptions } from "./uploads.ts";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +15,7 @@ const db = new DatabaseSync(resolve(dataDir, "reports.sqlite"));
 db.exec(
   "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, fingerprint TEXT UNIQUE NOT NULL, payload TEXT NOT NULL)",
 );
+const sources = new SourceManager(db, loadSources(root), importLimits);
 const insert = db.prepare("INSERT OR IGNORE INTO runs VALUES (?, ?, ?)");
 const port = Number(process.env.PORT || 3100);
 const host = process.env.HOST || "127.0.0.1";
@@ -60,6 +63,23 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === "/api/health") {
       send(200, { mode: "server", storage: "sqlite", importLimits });
+      return;
+    }
+    if (url.pathname === "/api/sources" && req.method === "GET") {
+      send(200, sources.statuses());
+      return;
+    }
+    const scanMatch = url.pathname.match(
+      /^\/api\/sources\/([a-zA-Z0-9_-]+)\/scan$/,
+    );
+    if (scanMatch && req.method === "POST") {
+      const source = sources.statuses().find((s) => s.id === scanMatch[1]);
+      if (!source?.enabled) {
+        send(404, { error: "Source is missing or disabled." });
+        return;
+      }
+      void sources.scan(source.id);
+      send(202, { scanning: true });
       return;
     }
     if (url.pathname === "/api/runs" && req.method === "GET") {
@@ -166,12 +186,14 @@ const server = createServer(async (req, res) => {
   }
 });
 server.requestTimeout = 0; // Large local uploads may take longer than Node's five-minute default.
-server.listen(port, host, () =>
-  console.log(`Test Report Hub: http://${host}:${port} (SQLite: ${dataDir})`),
-);
+server.listen(port, host, () => {
+  console.log(`Test Report Hub: http://${host}:${port} (SQLite: ${dataDir})`);
+  sources.start();
+});
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () =>
-    server.close(() => {
+    server.close(async () => {
+      await sources.stop();
       db.close();
       process.exit(0);
     }),

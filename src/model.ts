@@ -22,6 +22,10 @@ export interface TestCase {
   file: string;
 }
 export interface Run {
+  sourceId?: string;
+  sourceLabel?: string;
+  sourceItem?: string;
+  sourceUrl?: string;
   id: string;
   fingerprint: string;
   name: string;

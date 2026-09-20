@@ -188,3 +188,128 @@ Add a format detector and adapter in `src/normalize.ts`, return `TestCase[]`, an
 Environment variables: `MAX_UPLOAD_MB` (1024), `MAX_METADATA_MB` (256), `PORT` (3100), `HOST` (127.0.0.1), `DATA_DIR` (project's `data/`), `ALLOWED_HOST` (optional exact trusted host with port). The app defaults to loopback, rejects unexpected hosts and cross-origin requests, and has no built-in user accounts. Team deployment requires a trusted authenticated reverse proxy, HTTPS and an explicit host configuration. Do not expose this unauthenticated server directly to the internet.
 
 For backups, stop the app and copy the `data/` directory. Import performance is designed for local/small-team use: all normalized runs load into browser memory, with 30-row display pagination. Database-side filtering and pagination are a future scale improvement. There is no scheduled polling, report URL fetching, attachment viewer, role model or cross-format semantic deduplication in this version.
+
+## Read reports automatically (v1.2)
+
+Run `npm ci`, `npm run build`, then `npm start` using Node 24. Open
+http://localhost:3100 and select **Sources**. The server creates `report-inbox`
+next to `package.json`. Drop report files or complete report folders into it.
+The dashboard scans every 60 seconds. A new/changed report must remain unchanged
+for at least 30 seconds between observations before import, so the first import
+usually takes two scans. **Scan now** starts a background scan; the Sources screen
+updates every three seconds. Dashboard totals refresh every 15 seconds. Select
+**Refresh dashboard** to load imported executions immediately. No Jenkins changes are needed for local use.
+
+Keep each execution in its own folder, for example:
+
+```text
+report-inbox/Payments/build-104/playwright-report/index.html
+report-inbox/Orders/build-82/allure-report/index.html
+report-inbox/Orders/build-82/allure-report/data/test-cases/...
+```
+
+Playwright standalone HTML, supported JSON/CSV, report ZIPs, Allure result files
+(`*-result.json`) and complete generated Allure folders are detected automatically.
+Attachments are skipped. Allure test-case files from one report are grouped as one
+execution. Publish one representation of each run: including both raw Allure
+results and its generated report imports both. An Allure `index.html` alone often
+contains only the application shell: copy its companion data folders too.
+Unfamiliar custom HTML still requires a reusable adapter for that reporter format;
+there is no reliable universal way to infer test outcomes from arbitrary HTML.
+Unsupported reports appear as errors and do not prevent other reports importing.
+
+### Configure locations
+
+Copy `config/sources.example.json` to `sources.config.json` in the project root.
+Enable and edit the sources you need, then restart the server. Configuration is
+server-side; the UI never collects passwords. The example's local folder must
+exist (`mkdir report-inbox` if necessary). Relative folder paths resolve against
+the project root. Alternatively, set `SOURCES_CONFIG` to another JSON file.
+With no configuration file, `REPORTS_DIR` overrides the default local inbox:
+
+```powershell
+$env:REPORTS_DIR = 'C:\QA\Reports'
+npm start
+```
+
+- `type: "folder"`: local, synced SharePoint/OneDrive, Windows UNC, or mounted
+  network folder. The Node process must have read access. For Windows services,
+  prefer a UNC path over a mapped drive that exists only in your interactive session.
+- `project`: optional fixed project name for that source. Otherwise report project
+  labels are preserved. `projectFromFolder: true` uses the first relative directory
+  as the project (useful when each project has its own folder).
+- `pollSeconds`: at least 10; set 0 for manual scans only after the startup scan.
+- `settleSeconds`: wait for an unchanged listing across scans (default 30).
+  Set 0 only if the producer publishes completed files atomically.
+- `completionMarker`: optional filename, e.g. `.complete`. Import waits until that
+  file exists in the report's directory, then skips the time-based waiting period.
+  For generated Allure, put it beside `index.html`; for raw results, beside the
+  `*-result.json` files. Jenkins should write it **last**, after copying all files.
+  Remove the marker before replacing a report. Unique build folders are preferred.
+- `include`: optional relative-path globs, e.g. `["**/index.html", "**/*.zip"]`.
+  `*`, `**` and `?` are supported. Matching one Allure file includes its companions.
+
+Scans never modify source files. Signatures persist in SQLite, preventing unchanged
+reports from being imported after restart. Identical content at a new build path
+counts as a new execution; touching an unchanged report does not duplicate it.
+Changing report contents at an existing path appends a new historical run. Deleting
+an imported run does not reset its source signature; move/re-publish it at a new
+execution path if you want to import it again. Status lists show at most 100 recent
+items per source. Missing upstream files do not delete historical dashboard runs.
+A report is checked again after parsing to reject changes during copying; the
+completion marker is recommended for reliable CI publication.
+
+### Microsoft 365 / SharePoint Online
+
+Use `type: "sharepoint-online"`, the document library's Graph `driveId`, and the
+report folder's `folderId`. An administrator must register an Entra application
+and grant appropriate Graph application read permissions for that location.
+For restricted access, configure selected permissions and the corresponding explicit
+site/resource grant; consent alone does not grant access with selected permissions.
+See [Microsoft's selected permissions documentation](https://learn.microsoft.com/en-us/graph/permissions-selected-overview)
+and [listing drive folder children](https://learn.microsoft.com/en-us/graph/api/driveitem-list-children?view=graph-rest-1.0).
+Store credentials in the Node process environment or your deployment's secret store:
+
+```powershell
+$env:SP_TENANT_ID = '<tenant-id>'
+$env:SP_CLIENT_ID = '<application-id>'
+$env:SP_CLIENT_SECRET = '<client-secret>'
+npm start
+```
+
+The reader obtains and refreshes app-only access tokens, follows folder pagination,
+and streams report downloads. Optional `accessTokenEnv` can name an externally
+managed Graph bearer token instead; the dashboard cannot renew externally supplied
+tokens. Environment-variable names can be customized in the configuration.
+Do not commit credentials; `sources.config.json` is ignored by Git.
+
+### On-premises SharePoint
+
+Use `type: "sharepoint-rest"`, the HTTPS site URL, server-relative folder path,
+and `accessTokenEnv` naming a valid token for that SharePoint server. This uses the
+[SharePoint folders/files REST API](https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins/working-with-folders-and-files-with-rest).
+Authentication availability and token issuance depend on your farm configuration;
+your administrator must provision/renew the bearer token. The built-in REST reader
+does **not** implement NTLM/Kerberos or interactive login. For farms that require
+Windows integrated authentication, sync/export the report library to a local/shared
+folder and use the folder reader under an account with access. Configure enterprise
+CA trust using Node's `NODE_EXTRA_CA_CERTS` where required; keep TLS validation on.
+
+SharePoint protocols are covered by mock tests. A live tenant/farm still needs
+validation with your own authentication and library settings.
+
+### Jenkins later
+
+Configure Jenkins to publish complete report folders to a configured SharePoint
+library or shared folder, retaining build IDs in the paths. The dashboard polls
+that location; Jenkins does not need to call the dashboard. This release reads
+those locations, not Jenkins' artifact API directly. CI can optionally trigger
+`POST /api/sources/<id>/scan`; `GET /api/sources` returns scan/item status. These
+routes have the same local host/origin restrictions as existing report APIs. Keep
+the default loopback binding, or put authentication on a trusted reverse proxy
+before making the dashboard available remotely.
+
+The existing `MAX_UPLOAD_MB` (default 1024 MB) and `MAX_METADATA_MB` (default 256 MB)
+limits also apply to each source report bundle. Increase them in the server
+environment for larger reports. Sources scan at most 20,000 directory entries and
+24 levels; use narrower source folders for larger archives.

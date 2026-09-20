@@ -1,0 +1,47 @@
+{
+  "sources": [
+    {
+      "id": "local-inbox",
+      "label": "Local reports",
+      "type": "folder",
+      "path": "report-inbox",
+      "pollSeconds": 60,
+      "settleSeconds": 30,
+      "projectFromFolder": true
+    },
+    {
+      "id": "m365",
+      "label": "SharePoint Online",
+      "type": "sharepoint-online",
+      "enabled": false,
+      "driveId": "YOUR_DOCUMENT_LIBRARY_DRIVE_ID",
+      "folderId": "YOUR_REPORT_FOLDER_ITEM_ID",
+      "tenantIdEnv": "SP_TENANT_ID",
+      "clientIdEnv": "SP_CLIENT_ID",
+      "clientSecretEnv": "SP_CLIENT_SECRET",
+      "pollSeconds": 120,
+      "settleSeconds": 60
+    },
+    {
+      "id": "on-prem",
+      "label": "On-premises SharePoint",
+      "type": "sharepoint-rest",
+      "enabled": false,
+      "siteUrl": "https://sharepoint.example.com/sites/quality",
+      "folderServerRelativeUrl": "/sites/quality/Shared Documents/Reports",
+      "accessTokenEnv": "SP_ONPREM_TOKEN",
+      "pollSeconds": 120,
+      "settleSeconds": 60
+    },
+    {
+      "id": "shared-folder",
+      "label": "Shared reports",
+      "type": "folder",
+      "enabled": false,
+      "path": "\\\\fileserver\\quality\\reports",
+      "pollSeconds": 120,
+      "settleSeconds": 60,
+      "completionMarker": ".complete"
+    }
+  ]
+}

@@ -7,3 +7,6 @@ data/
 .tmp-html-*/
 test-results/
 playwright-report/
+
+sources.config.json
+report-inbox/

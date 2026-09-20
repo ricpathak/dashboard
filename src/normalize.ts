@@ -424,7 +424,8 @@ export async function normalize(
   }
   for (const shell of files.filter((f) => f.kind === "html-shell")) {
     const companions =
-      shell.warning?.startsWith("Allure") &&
+      (/(^|\/)index\.html?$/i.test(shell.name) ||
+        shell.warning?.startsWith("Allure")) &&
       allures.some(
         (x) =>
           (x.file.group || "selected-files") ===
@@ -432,7 +433,7 @@ export async function normalize(
       );
     if (!companions)
       throw Error(
-        `${shell.name}: ${shell.warning} For Allure, select the whole report folder or ZIP it with index.html and data/. For a custom HTML layout, provide a sample or a table with test name and status columns.`,
+        `${shell.name}: ${shell.warning} For Allure, select the whole report folder or ZIP it with index.html and data/. For an unfamiliar custom reporter, a reusable reporter adapter is required; changing every project to a table format is not necessary.`,
       );
   }
   if (!reports.length)
